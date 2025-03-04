@@ -1,0 +1,15 @@
+{
+    "storage": "ftp",
+    "ftp": {
+        "host": "127.0.0.1",
+        "port": 21,
+        "user": "username",
+        "password": "password"
+    },
+    "sync": [
+        {
+            "local": "D:/Projekty/BKSync/test",
+            "remote": "test"
+        }
+    ]
+}
