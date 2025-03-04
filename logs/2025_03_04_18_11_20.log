@@ -1,8 +1,0 @@
-time=2025-03-04 18:11:20 level=info msg=Directory D:\Projekty\BKSync\test\new test has not changed
-time=2025-03-04 18:11:20 level=info msg=Directory D:\Projekty\BKSync\test\test has not changed
-time=2025-03-04 18:11:20 level=info msg=skipping file: D:\test\test.txt
-time=2025-03-04 18:11:20 level=info msg=skipping file: D:\test\test2.txt
-time=2025-03-04 18:11:20 level=info msg=New files: 0
-time=2025-03-04 18:11:20 level=info msg=Updated files: 0
-time=2025-03-04 18:11:20 level=info msg=Skipped files: 2
-time=2025-03-04 18:11:20 level=info msg=Removed files: 0
