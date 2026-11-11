@@ -3,13 +3,13 @@ package dirchecker
 import (
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 )
-
-const hashFileName = "../hashes.json"
 
 type HashEntry struct {
 	Directory string `json:"directory"`
@@ -17,91 +17,95 @@ type HashEntry struct {
 }
 
 type DirChecker struct {
-	existingHashes []*HashEntry
+	hashFilePath string
+	hashes       map[string]string
+	loaded       bool
 }
 
-func NewDirChecker() *DirChecker {
-	return &DirChecker{}
+func NewDirChecker(hashFilePath string) *DirChecker {
+	return &DirChecker{hashFilePath: hashFilePath}
 }
 
-func (c *DirChecker) Check(path string) (bool, error) {
-	existingHashes, err := c.getExistingHashes()
-	if err != nil {
-		return false, err
+func (c *DirChecker) HashChanged(path string) (string, bool, error) {
+	if err := c.loadHashes(); err != nil {
+		return "", false, err
 	}
 
 	hash, err := c.GenerateDirHash(path)
 	if err != nil {
-		return false, err
+		return "", false, err
 	}
 
-	// Check if the hash has changed
-	hashChanged := true
-	for _, entry := range existingHashes {
-		if entry.Directory == path && entry.Hash == hash {
-			hashChanged = false
-			break
-		}
-	}
-
-	return hashChanged, nil
+	existingHash, exists := c.hashes[path]
+	return hash, !exists || existingHash != hash, nil
 }
 
 func (c *DirChecker) StoreHash(path, hash string) error {
-	existingHashes, err := c.getExistingHashes()
-	if err != nil {
+	if err := c.loadHashes(); err != nil {
 		return err
 	}
 
-	for i, existingHash := range existingHashes {
-		if existingHash.Directory == path {
-			existingHashes = append(existingHashes[:i], existingHashes[i+1:]...)
-		}
+	hashes := make(map[string]string, len(c.hashes)+1)
+	for directory, existingHash := range c.hashes {
+		hashes[directory] = existingHash
 	}
+	hashes[path] = hash
 
-	// Store the new hash in the hashFile
-	hashEntry := HashEntry{
-		Directory: path,
-		Hash:      hash,
+	entries := make([]HashEntry, 0, len(hashes))
+	for directory, entryHash := range hashes {
+		entries = append(entries, HashEntry{Directory: directory, Hash: entryHash})
 	}
-	existingHashes = append(existingHashes, &hashEntry)
-	c.existingHashes = existingHashes
-	existingHashesJSON, err := json.Marshal(c.existingHashes)
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Directory < entries[j].Directory
+	})
+
+	data, err := json.Marshal(entries)
 	if err != nil {
 		return err
 	}
+	data = append(data, '\n')
 
-	hashFile, err := os.OpenFile(hashFileName, os.O_CREATE|os.O_TRUNC, 0666)
-	if err != nil {
-		return err
-	}
-	defer hashFile.Close()
-
-	_, err = hashFile.Write(existingHashesJSON)
-	if err != nil {
-		return err
-	}
-	_, err = hashFile.WriteString("\n")
-	if err != nil {
+	if err := c.writeHashes(data); err != nil {
 		return err
 	}
 
+	c.hashes = hashes
 	return nil
 }
 
-func (c *DirChecker) GenerateDirHash(path string) (string, error) {
+func (c *DirChecker) GenerateDirHash(root string) (string, error) {
+	root = filepath.Clean(root)
 	hasher := sha256.New()
-
-	err := filepath.Walk(path, func(filePath string, info os.FileInfo, err error) error {
+	err := filepath.WalkDir(root, func(filePath string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		relPath, _ := filepath.Rel(path, filePath)
 
-		hasher.Write([]byte(fmt.Sprintf("%s-%d", relPath, info.ModTime().Unix())))
-		return nil
+		if filePath != root && strings.HasPrefix(entry.Name(), ".") {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+
+		relativePath, err := filepath.Rel(root, filePath)
+		if err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			_, err = fmt.Fprintf(hasher, "dir:%q\n", relativePath)
+			return err
+		}
+
+		_, err = fmt.Fprintf(hasher, "file:%q:%d:%d\n", relativePath, info.Size(), info.ModTime().UnixNano())
+		return err
 	})
-
 	if err != nil {
 		return "", err
 	}
@@ -109,37 +113,58 @@ func (c *DirChecker) GenerateDirHash(path string) (string, error) {
 	return fmt.Sprintf("%x", hasher.Sum(nil)), nil
 }
 
-func (c *DirChecker) GetDriHash(path string) string {
-	hashes, err := c.getExistingHashes()
-	if err != nil {
-		return ""
+func (c *DirChecker) loadHashes() error {
+	if c.loaded {
+		return nil
+	}
+	if c.hashFilePath == "" {
+		return fmt.Errorf("hash file path is empty")
 	}
 
-	for _, hash := range hashes {
-		if hash.Directory == path {
-			return hash.Hash
+	data, err := os.ReadFile(c.hashFilePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	var entries []HashEntry
+	if err == nil && len(data) > 0 {
+		if err := json.Unmarshal(data, &entries); err != nil {
+			return err
 		}
 	}
 
-	return ""
+	c.hashes = make(map[string]string, len(entries))
+	for _, entry := range entries {
+		c.hashes[entry.Directory] = entry.Hash
+	}
+	c.loaded = true
+	return nil
 }
 
-func (c *DirChecker) getExistingHashes() ([]*HashEntry, error) {
-	if len(c.existingHashes) > 0 {
-		return c.existingHashes, nil
+func (c *DirChecker) writeHashes(data []byte) error {
+	dir := filepath.Dir(c.hashFilePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
 	}
 
-	hashFile, err := os.OpenFile(hashFileName, os.O_CREATE, 0666)
+	file, err := os.CreateTemp(dir, ".hashes-*.tmp")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer hashFile.Close()
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
 
-	decoder := json.NewDecoder(hashFile)
-	err = decoder.Decode(&c.existingHashes)
-	if err != nil && err != io.EOF {
-		return nil, err
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
 	}
 
-	return c.existingHashes, nil
+	return os.Rename(tempPath, c.hashFilePath)
 }

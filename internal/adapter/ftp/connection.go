@@ -1,23 +1,28 @@
 package ftp
 
 import (
-	"fmt"
+	"net"
 	"time"
 
 	ftpServer "github.com/jlaffaye/ftp"
-	"github.com/spf13/viper"
 )
 
-func Connect() (*ftpServer.ServerConn, error) {
-	ftpUrl := fmt.Sprintf("%s:%s", viper.GetString("ftp.host"), viper.GetString("ftp.port"))
+type Config struct {
+	Host     string `mapstructure:"host"`
+	Port     string `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+}
 
-	connection, err := ftpServer.Dial(ftpUrl, ftpServer.DialWithTimeout(5*time.Second))
+func Connect(config Config) (*ftpServer.ServerConn, error) {
+	address := net.JoinHostPort(config.Host, config.Port)
+	connection, err := ftpServer.Dial(address, ftpServer.DialWithTimeout(5*time.Second))
 	if err != nil {
 		return nil, err
 	}
 
-	err = connection.Login(viper.GetString("ftp.user"), viper.GetString("ftp.password"))
-	if err != nil {
+	if err := connection.Login(config.User, config.Password); err != nil {
+		_ = connection.Quit()
 		return nil, err
 	}
 
