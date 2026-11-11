@@ -2,8 +2,10 @@ package local
 
 import (
 	"artekz/bksync/internal/synchronizer"
+	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -12,6 +14,10 @@ type LocalStorage struct {
 
 func NewLocalStorage() *LocalStorage {
 	return &LocalStorage{}
+}
+
+func (s *LocalStorage) JoinPath(parent, child string) string {
+	return filepath.Join(parent, child)
 }
 
 func (s *LocalStorage) Store(path string, file *os.File) error {
@@ -40,13 +46,19 @@ func (s *LocalStorage) MakeDir(path string) error {
 	return nil
 }
 
-func (s *LocalStorage) IsDirExists(path string) bool {
-	// Check if the directory exists
+func (s *LocalStorage) IsDirExists(path string) (bool, error) {
+	return s.pathExists(path, true)
+}
+
+func (s *LocalStorage) pathExists(path string, wantDirectory bool) (bool, error) {
 	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return false
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
-	return info.IsDir()
+	if err != nil {
+		return false, err
+	}
+	return info.IsDir() == wantDirectory, nil
 }
 
 func (s *LocalStorage) ModTime(path string) (time.Time, error) {
@@ -58,12 +70,8 @@ func (s *LocalStorage) ModTime(path string) (time.Time, error) {
 	return info.ModTime(), nil
 }
 
-func (s *LocalStorage) IsFileExists(path string) bool {
-	info, err := os.Stat(path)
-	if os.IsNotExist(err) {
-		return false
-	}
-	return !info.IsDir()
+func (s *LocalStorage) IsFileExists(path string) (bool, error) {
+	return s.pathExists(path, false)
 }
 
 func (s *LocalStorage) List(path string) ([]*synchronizer.SyncEntry, error) {
@@ -90,3 +98,9 @@ func (s *LocalStorage) RemoveDir(path string) error {
 func (s *LocalStorage) Delete(path string) error {
 	return os.Remove(path)
 }
+
+func (s *LocalStorage) Close() error {
+	return nil
+}
+
+var _ synchronizer.Storage = (*LocalStorage)(nil)
